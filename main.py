@@ -47,8 +47,11 @@ def obtener_partidos_hoy():
                         try:
                             datos_entrada = pd.DataFrame([[1, 5.0, 4.0]], columns=['es_local', 'racha_ofensiva', 'racha_pitcheo_defensa'])
                             probabilidades = modelo.predict_proba(datos_entrada)[0]
-                            prob_gana_vis = round(probabilidades[0] * 100, 2)
-                            prob_gana_local = round(probabilidades[1] * 100, 2)
+                            
+                            # 🛑 AQUÍ ESTÁ LA MAGIA: Agregamos float() para que no explote el JSON
+                            prob_gana_vis = float(round(probabilidades[0] * 100, 2))
+                            prob_gana_local = float(round(probabilidades[1] * 100, 2))
+                            
                         except:
                             prob_gana_local, prob_gana_vis = 54.2, 45.8
                     else:
