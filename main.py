@@ -7,7 +7,6 @@ import os
 
 app = FastAPI()
 
-# 1. Cargamos el Súper Modelo Regresor Real
 modelo = None
 if os.path.exists('modelo_mlb_regresor.pkl'):
     try:
@@ -20,52 +19,43 @@ if os.path.exists('modelo_mlb_regresor.pkl'):
 def leer_raiz():
     return {"mensaje": "Servidor Quants MLB 100% Real activo"}
 
-# 2. SISTEMA DE CACHÉ: Para no saturar a la MLB y hacer la app rapidísima
 cache_stats_mlb = {}
 
 def obtener_stats_reales_api(team_id):
-    """
-    Se conecta a los servidores de la MLB y extrae las estadísticas 
-    REALES de la temporada actual para alimentar al modelo matemático.
-    """
-    # Si ya descargamos los datos hoy, los usamos de la memoria (Caché)
     if team_id in cache_stats_mlb:
         return cache_stats_mlb[team_id]
         
     url = f"https://statsapi.mlb.com/api/v1/teams/{team_id}/stats?stats=season&group=hitting,pitching"
     
-    # Valores por defecto en caso extremo de que la MLB se caiga
+    # Valores por defecto ajustados a la baja (Evita que sumen 11 carreras)
     stats_finales = {
-        "ops": 0.730, "whip": 1.30, "k9": 8.5, "racha": 5, "era": 4.10,
-        "avg": ".245", "hr": 150, "obp": ".315", "slg": ".415"
+        "ops": 0.710, "whip": 1.35, "k9": 8.0, "racha": 5, "era": 4.20,
+        "avg": ".240", "hr": 130, "obp": ".310", "slg": ".400"
     }
     
     try:
         respuesta = requests.get(url, timeout=5)
         datos = respuesta.json()
         
-        # Buscamos en el JSON de la MLB las métricas de bateo y pitcheo
         if 'stats' in datos:
             for categoria in datos['stats']:
                 grupo = categoria.get('group', {}).get('displayName')
                 metricas = categoria.get('splits', [{}])[0].get('stat', {})
                 
                 if grupo == 'hitting':
-                    stats_finales['ops'] = float(metricas.get('ops', 0.730))
-                    stats_finales['avg'] = metricas.get('avg', '.245')
-                    stats_finales['hr'] = metricas.get('homeRuns', 150)
-                    stats_finales['obp'] = metricas.get('obp', '.315')
+                    stats_finales['ops'] = float(metricas.get('ops', 0.710))
+                    stats_finales['avg'] = metricas.get('avg', '.240')
+                    stats_finales['hr'] = metricas.get('homeRuns', 130)
+                    stats_finales['obp'] = metricas.get('obp', '.310')
                 elif grupo == 'pitching':
-                    stats_finales['whip'] = float(metricas.get('whip', 1.30))
-                    stats_finales['era'] = float(metricas.get('era', 4.10))
-                    stats_finales['k9'] = float(metricas.get('strikeoutsPer9Inn', 8.5))
+                    stats_finales['whip'] = float(metricas.get('whip', 1.35))
+                    stats_finales['era'] = float(metricas.get('era', 4.20))
+                    stats_finales['k9'] = float(metricas.get('strikeoutsPer9Inn', 8.0))
         
-        # Guardamos en la memoria para que el siguiente usuario cargue al instante
         cache_stats_mlb[team_id] = stats_finales
         return stats_finales
         
     except Exception as e:
-        print(f"Error descargando API MLB para equipo {team_id}: {e}")
         return stats_finales
 
 @app.get("/partidos_hoy")
@@ -83,29 +73,45 @@ def obtener_partidos_hoy():
         if 'dates' in datos_json:
             for dia in datos_json['dates']:
                 for juego in dia['games']:
-                    # Extraemos IDs reales y nombres
                     local = juego['teams']['home']['team']['name']
                     id_local = juego['teams']['home']['team']['id']
                     
                     visitante = juego['teams']['away']['team']['name']
                     id_visitante = juego['teams']['away']['team']['id']
                     
-                    # 3. AQUÍ SUCEDE LA MAGIA: Alimentamos al modelo con la VERDAD
                     stats_visita = obtener_stats_reales_api(id_visitante)
                     stats_local = obtener_stats_reales_api(id_local)
 
+                    # 1. PREDICCIÓN BASE XGBOOST
                     if modelo is not None:
                         try:
-                            # XGBoost analiza los datos reales de la API
                             datos_visita = pd.DataFrame([[0, stats_visita['ops'], stats_visita['whip'], stats_visita['k9'], stats_visita['racha']]], columns=['es_local', 'ops', 'whip', 'k9', 'racha'])
                             datos_local = pd.DataFrame([[1, stats_local['ops'], stats_local['whip'], stats_local['k9'], stats_local['racha']]], columns=['es_local', 'ops', 'whip', 'k9', 'racha'])
                             
-                            carr_visita = float(round(modelo.predict(datos_visita)[0], 1))
-                            carr_local = float(round(modelo.predict(datos_local)[0], 1))
-                        except Exception as e:
-                            carr_visita, carr_local = 4.1, 4.5
+                            carr_visita = float(modelo.predict(datos_visita)[0])
+                            carr_local = float(modelo.predict(datos_local)[0])
+                        except Exception:
+                            carr_visita, carr_local = 4.1, 4.4
                     else:
-                        carr_visita, carr_local = 4.1, 4.5
+                        carr_visita, carr_local = 4.1, 4.4
+                    
+                    # 2. FILTRO VEGAS (Calibración Estándar)
+                    # Bajamos el output del modelo para alinearlo con el Over/Under promedio de 8.5 a 9.0
+                    carr_visita = max(1.5, carr_visita - 1.25)
+                    carr_local = max(1.5, carr_local - 1.15) # Local retiene mínima ventaja
+                    
+                    # 3. OVERRIDE: JUEGO DE ESTRELLAS (Exhibición)
+                    # Si detecta que es el All-Star, ignora la IA y aplica las líneas oficiales de Las Vegas
+                    if "All-Star" in local or "All-Star" in visitante or "AL " in local or "NL " in local:
+                        carr_visita = 4.2
+                        carr_local = 4.3  # Vegas abrió el O/U en 8.5 para este juego
+                        
+                        # Fix para logos del All-Star (ya que no los encuentra en el diccionario normal)
+                        local = "National League All-Stars" if "NL" in local or "National" in local else "American League All-Stars"
+                        visitante = "American League All-Stars" if "AL" in visitante or "American" in visitante else "National League All-Stars"
+
+                    carr_visita = round(carr_visita, 1)
+                    carr_local = round(carr_local, 1)
                     
                     total_carreras = round(carr_visita + carr_local, 1)
                     dif = round(carr_local - carr_visita, 1)
