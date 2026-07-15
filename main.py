@@ -56,11 +56,18 @@ def obtener_stats_reales_api(team_id):
 
 @app.get("/partidos_hoy")
 def obtener_partidos_hoy():
-    hoy = datetime.today()
+    # 1. EL FIX DE LA ZONA HORARIA:
+    # Restamos 7 horas al servidor (UTC) para forzarlo a pensar en horario de Norteamérica (MST/PT).
+    # Así garantizamos que no se salte los juegos nocturnos.
+    hoy = datetime.now() - timedelta(hours=7)
     futuro = hoy + timedelta(days=5)
     
-    # ⚠️ MAGIA AQUÍ: gameTypes=R,A,F (Regular, All-Star, Postseason) y hydrate=linescore (En vivo)
-    url_mlb = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameTypes=R,A,F,D,L,W&hydrate=linescore&startDate={hoy.strftime('%Y-%m-%d')}&endDate={futuro.strftime('%Y-%m-%d')}"
+    hoy_str = hoy.strftime('%Y-%m-%d')
+    futuro_str = futuro.strftime('%Y-%m-%d')
+    
+    # 2. EL FIX DEL ALL-STAR:
+    # Agregamos 'E' (Exhibition) y 'S' (Spring/Special) por si la MLB cambió la etiqueta del All-Star
+    url_mlb = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameTypes=R,A,E,S,F,D,L,W&hydrate=linescore&startDate={hoy_str}&endDate={futuro_str}"
     
     try:
         respuesta = requests.get(url_mlb)
@@ -98,9 +105,7 @@ def obtener_partidos_hoy():
                         score_local = linescore.get('teams', {}).get('home', {}).get('runs', 0)
                         score_visita = linescore.get('teams', {}).get('away', {}).get('runs', 0)
                     else:
-                        fecha_juego = juego.get('gameDate', '')
-                        # Convertir a hora si es necesario, aquí dejamos un placeholder
-                        estado_juego = "HOY"
+                        estado_juego = "PROGRAMADO"
                         
                     # --- PREDICCIONES Y LÍMITES ESTRICTOS ---
                     stats_visita = obtener_stats_reales_api(id_visitante)
@@ -117,12 +122,12 @@ def obtener_partidos_hoy():
                     else:
                         carr_visita, carr_local = 4.2, 4.5
                     
-                    # 🛡️ LIMITADOR ESTRICTO (Garantiza que nunca pasen de 11.0 combinados)
+                    # 🛡️ LIMITADOR ESTRICTO 
                     carr_visita = min(max(carr_visita, 2.5), 5.2)
                     carr_local = min(max(carr_local, 2.5), 5.5)
 
-                    # Regla específica All-Star
-                    if "All-Star" in local or "All-Star" in visitante or id_local in [159, 160]:
+                    # 🌟 REGLA ESPECÍFICA ALL-STAR
+                    if "All-Star" in local or "All-Star" in visitante or id_local in [159, 160, 159, 160] or "National" in local or "American" in local:
                         carr_visita, carr_local = 4.2, 4.3
                         local = "NL All-Stars" if "NL" in local or "National" in local else "AL All-Stars"
                         visitante = "AL All-Stars" if "AL" in visitante or "American" in visitante else "NL All-Stars"
